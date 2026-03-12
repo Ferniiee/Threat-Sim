@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.security import OAuth2PasswordBearer
 from sqlmodel import Session, select
 from database import get_session
 from models import User, AuditLog
@@ -10,33 +11,39 @@ import os
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# This handles password hashing - NEVER store plain text passwords
-# bcrypt is the industry standard hashing algorithm
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = "HS256"  # the algorithm used to sign JWT tokens
+ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 # --- HELPER FUNCTIONS ---
 
 def hash_password(password: str) -> str:
-    # turns "mypassword123" into "$2b$12$..." (unreadable hash)
     return pwd_context.hash(password)
 
 def verify_password(plain: str, hashed: str) -> bool:
-    # checks if a plain password matches a stored hash
     return pwd_context.verify(plain, hashed)
 
 def create_token(user_id: int, role: str) -> str:
-    # JWT = JSON Web Token
-    # It's a signed string that proves who you are without hitting the DB every request
     payload = {
-        "sub": str(user_id),     # "sub" = subject (who this token is for)
+        "sub": str(user_id),
         "role": role,
-        "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS)  # expiry
+        "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS)
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = int(payload.get("sub"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
 
 # --- REQUEST BODY SHAPES ---
 
@@ -53,12 +60,9 @@ class LoginRequest(BaseModel):
 
 @router.post("/register")
 def register(req: RegisterRequest, session: Session = Depends(get_session)):
-    # Check if email already exists
     existing = session.exec(select(User).where(User.email == req.email)).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create new user with hashed password
     user = User(
         email=req.email,
         hashed_password=hash_password(req.password),
@@ -67,8 +71,6 @@ def register(req: RegisterRequest, session: Session = Depends(get_session)):
     session.add(user)
     session.commit()
     session.refresh(user)
-
-    # Log this action to audit log (SOC2 pattern)
     log = AuditLog(
         user_id=user.id,
         action="user_registered",
@@ -76,22 +78,14 @@ def register(req: RegisterRequest, session: Session = Depends(get_session)):
     )
     session.add(log)
     session.commit()
-
     return {"message": "User created successfully", "user_id": user.id}
 
 @router.post("/login")
 def login(req: LoginRequest, session: Session = Depends(get_session)):
-    # Find user by email
     user = session.exec(select(User).where(User.email == req.email)).first()
-    
-    # Check user exists AND password is correct
     if not user or not verify_password(req.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    # Generate JWT token
     token = create_token(user.id, user.role)
-
-    # Log login to audit log
     log = AuditLog(
         user_id=user.id,
         action="user_login",
@@ -99,7 +93,6 @@ def login(req: LoginRequest, session: Session = Depends(get_session)):
     )
     session.add(log)
     session.commit()
-
     return {
         "access_token": token,
         "token_type": "bearer",

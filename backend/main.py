@@ -39,20 +39,3 @@ app.include_router(analytics.router)   # ← added
 @app.get("/")
 def root():
     return {"message": "ThreatSim API is running"}
-
-from fastapi.security import OAuth2PasswordBearer
-from fastapi import Security
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-
-def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = int(payload.get("sub"))
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
