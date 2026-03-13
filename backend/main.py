@@ -23,7 +23,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        # "https://your-frontend.vercel.app",  # ← add after deploy
+        "https://threat-sim-ten.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
